@@ -35,10 +35,7 @@ void MCKineticsObserver::configure(const mc_control::MCController & ctl, const m
   {
     for(size_t i = 0; i < imuNames_.size(); ++i) { listIMUs_.push_back({i, imuNames_[i]}); }
   }
-  else
-  {
-    listIMUs_.push_back({0, ctl.robot(robot_).bodySensor().name()});
-  }
+  else { listIMUs_.push_back({0, ctl.robot(robot_).bodySensor().name()}); }
 
   config("debug", debug_);
   config("verbose", verbose_);
@@ -309,6 +306,7 @@ void MCKineticsObserver::setObserverCovariances()
 void MCKineticsObserver::reset(const mc_control::MCController & ctl)
 {
   valinor_.reset(ctl);
+  auto & controller = const_cast<mc_control::MCController &>(ctl);
 
   nh_ = mc_rtc::ROSBridge::get_node_handle();
   if(nh_) { xPosPub_ = nh_->create_publisher<geometry_msgs::msg::PoseStamped>("KO_pose", 1); }
@@ -334,6 +332,13 @@ void MCKineticsObserver::reset(const mc_control::MCController & ctl)
   X_0_fb_ = realRobot.posW().translation();
 
   initObserverStateVector(ctl, realRobot);
+
+  if(!controller.datastore().has("KineticsObserver::unbiasedDisturbanceWrench"))
+  {
+    controller.datastore().make<sva::ForceVecd>("KineticsObserver::unbiasedDisturbanceWrench");
+  }
+  controller.datastore().assign<sva::ForceVecd>("KineticsObserver::unbiasedDisturbanceWrench",
+                                                unbiasedDisturbanceWrench_);
 }
 
 so::Matrix3 computeCentroidalInertia(const rbd::MultiBody & mb,
@@ -358,6 +363,7 @@ so::Matrix3 computeCentroidalInertia(const rbd::MultiBody & mb,
 bool MCKineticsObserver::run(const mc_control::MCController & ctl)
 {
   valinor_.run(ctl);
+  auto & controller = const_cast<mc_control::MCController &>(ctl);
 
   const auto & robot = ctl.robot(robot_);
   const auto & realRobot = ctl.realRobot(robot_);
@@ -435,18 +441,15 @@ bool MCKineticsObserver::run(const mc_control::MCController & ctl)
     wrenchOffsetIndex_++;
   }
 
+  controller.datastore().assign<sva::ForceVecd>("KineticsObserver::unbiasedDisturbanceWrench",
+                                                unbiasedDisturbanceWrench_);
+
   // Kinematics of the floating base in the real world frame (our estimation goal)
   so::kine::Kinematics mcko_K_0_fb;
 
   if(observer_.nanDetected_) { estimationState_ = errorDetected; }
-  else if(invincibilityIter_ > 0 && invincibilityIter_ < invincibilityFrame_)
-  {
-    estimationState_ = invincibilityFrame;
-  }
-  else
-  {
-    estimationState_ = noIssue;
-  }
+  else if(invincibilityIter_ > 0 && invincibilityIter_ < invincibilityFrame_) { estimationState_ = invincibilityFrame; }
+  else { estimationState_ = noIssue; }
 
   // if no anomaly is detected and if we aren't in the "invicibility frame", we update the floating base with the
   // results of the Kinetics Observer
@@ -967,10 +970,7 @@ so::kine::Kinematics MCKineticsObserver::getOdometryWorldContactRest(const mc_co
   double diffNorm = flexRotDiff.norm() / 2;
 
   if(diffNorm > 1.0) { diffNorm = 1.0; }
-  else if(diffNorm < -1.0)
-  {
-    diffNorm = -1.0;
-  }
+  else if(diffNorm < -1.0) { diffNorm = -1.0; }
 
   double flexRotAngle = std::asin(diffNorm);
 
@@ -1083,10 +1083,7 @@ void MCKineticsObserver::updateContact(const mc_control::MCController & ctl, KoC
     observer_.updateContactWithWrenchSensor(contact.contactWrenchVector_, contactSensorCovariance_,
                                             contact.fbContactKine_, contact.id());
   }
-  else
-  {
-    observer_.updateContactWithNoSensor(contact.fbContactKine_, contact.id());
-  }
+  else { observer_.updateContactWithNoSensor(contact.fbContactKine_, contact.id()); }
 }
 
 void MCKineticsObserver::updateContacts(const mc_control::MCController & ctl, mc_rtc::Logger & logger)
@@ -1104,10 +1101,7 @@ void MCKineticsObserver::updateContacts(const mc_control::MCController & ctl, mc
 
       initCovariance = &contactInitCovarianceNewContacts_flat_;
     }
-    else
-    {
-      initCovariance = &contactInitCovarianceNewContacts_;
-    }
+    else { initCovariance = &contactInitCovarianceNewContacts_; }
   }
   else
   {
@@ -1118,10 +1112,7 @@ void MCKineticsObserver::updateContacts(const mc_control::MCController & ctl, mc
 
       initCovariance = &contactInitCovarianceFirstContacts_flat_;
     }
-    else
-    {
-      initCovariance = &contactInitCovarianceFirstContacts_;
-    }
+    else { initCovariance = &contactInitCovarianceFirstContacts_; }
   }
 
   auto onNewContact = [this, &ctl, &logger, &initCovariance](KoContactWithSensor & newContact)
@@ -1187,19 +1178,18 @@ void MCKineticsObserver::addToLogger(const mc_control::MCController & ctl,
   for(auto & imu : listIMUs_)
   {
     logger.addLogEntry(category_ + "_MEKF_estimatedState_gyroBias_" + imu.name(),
-                       [this, &imu]() -> Eigen::Vector3d {
+                       [this, &imu]() -> Eigen::Vector3d
+                       {
                          return observer_.getCurrentStateVector().segment(observer_.gyroBiasIndex(imu.id()),
                                                                           observer_.sizeGyroBias);
                        });
   }
   logger.addLogEntry(
-      category_ + "_MEKF_estimatedState_extForceCentr",
-      [this]() -> Eigen::Vector3d
+      category_ + "_MEKF_estimatedState_extForceCentr", [this]() -> Eigen::Vector3d
       { return observer_.getCurrentStateVector().segment(observer_.unmodeledForceIndex(), observer_.sizeForce); });
 
   logger.addLogEntry(
-      category_ + "_MEKF_estimatedState_extTorqueCentr",
-      [this]() -> Eigen::Vector3d
+      category_ + "_MEKF_estimatedState_extTorqueCentr", [this]() -> Eigen::Vector3d
       { return observer_.getCurrentStateVector().segment(observer_.unmodeledTorqueIndex(), observer_.sizeTorque); });
   logger.addLogEntry(category_ + "_MEKF_estimatedState_unbiasedExtForce",
                      [this]() -> Eigen::Vector3d { return getUnbiasedEstimatedDisturbanceWrench().force(); });
@@ -1236,8 +1226,7 @@ void MCKineticsObserver::addToLogger(const mc_control::MCController & ctl,
     logger.addLogEntry(category_ + "_debug_config_OdometryType",
                        [this]() -> std::string { return so::odometry::odometryTypeToString(odometryType_); });
 
-    logger.addLogEntry(category_ + "_debug_config_withAdaptativeContactProcessCov",
-                       [this]() -> std::string
+    logger.addLogEntry(category_ + "_debug_config_withAdaptativeContactProcessCov", [this]() -> std::string
                        { return observer_.getWithAdaptativeContactProcessCov() ? "True" : "False"; });
 
     for(auto & imu : listIMUs_)
@@ -1253,12 +1242,12 @@ void MCKineticsObserver::addToLogger(const mc_control::MCController & ctl,
                                .diagonal();
                          });
       logger.addLogEntry(
-          category_ + "_MEKF_measurements_predError_vector",
-          [this]() -> Eigen::VectorXd
+          category_ + "_MEKF_measurements_predError_vector", [this]() -> Eigen::VectorXd
           { return (observer_.getEKF().getLastMeasurement() - observer_.getEKF().getLastPredictedMeasurement()); });
       logger.addLogEntry(
           category_ + "_MEKF_measurements_predError_norm",
-          [this]() -> double {
+          [this]() -> double
+          {
             return (observer_.getEKF().getLastMeasurement() - observer_.getEKF().getLastPredictedMeasurement()).norm();
           });
       logger.addLogEntry(category_ + "_MEKF_measurements_gyro_" + imu.name() + "_measured",
@@ -1296,7 +1285,8 @@ void MCKineticsObserver::addToLogger(const mc_control::MCController & ctl,
                                observer_.getIMUMeasIndexByNum(imu.id()), observer_.sizeAcceleroSignal);
                          });
       logger.addLogEntry(category_ + "_MEKF_measurements_accelerometer_" + imu.name() + "_corrected",
-                         [this, &imu]() -> Eigen::Vector3d {
+                         [this, &imu]() -> Eigen::Vector3d
+                         {
                            return correctedMeasurements_.segment(observer_.getIMUMeasIndexByNum(imu.id()),
                                                                  observer_.sizeAcceleroSignal);
                          });
@@ -1316,13 +1306,11 @@ void MCKineticsObserver::addToLogger(const mc_control::MCController & ctl,
                          [&imu]() -> Eigen::Vector3d { return imu.gyroBias; });
 
       /* Inputs */
-      logger.addLogEntry(category_ + "_MEKF_inputs_additionalWrench_Force",
-                         [this]() -> Eigen::Vector3d
+      logger.addLogEntry(category_ + "_MEKF_inputs_additionalWrench_Force", [this]() -> Eigen::Vector3d
                          { return observer_.getAdditionalWrench().segment(0, observer_.sizeForce); });
-      logger.addLogEntry(category_ + "_MEKF_inputs_additionalWrench_Torque",
-                         [this]() -> Eigen::Vector3d {
-                           return observer_.getAdditionalWrench().segment(observer_.sizeForce, observer_.sizeTorque);
-                         });
+      logger.addLogEntry(
+          category_ + "_MEKF_inputs_additionalWrench_Torque", [this]() -> Eigen::Vector3d
+          { return observer_.getAdditionalWrench().segment(observer_.sizeForce, observer_.sizeTorque); });
 
       /* State covariances */
       logger.addLogEntry(category_ + "_MEKF_stateCovariances_contactsPosAverage_x",
@@ -1495,22 +1483,26 @@ void MCKineticsObserver::addToLogger(const mc_control::MCController & ctl,
 
       /* Plots of the innovation */
       logger.addLogEntry(category_ + "_MEKF_innovation_positionW_",
-                         [this]() -> Eigen::Vector3d {
+                         [this]() -> Eigen::Vector3d
+                         {
                            return observer_.getEKF().getInnovation().segment(observer_.posIndexTangent(),
                                                                              observer_.sizePosTangent);
                          });
       logger.addLogEntry(category_ + "_MEKF_innovation_linVelW_",
-                         [this]() -> Eigen::Vector3d {
+                         [this]() -> Eigen::Vector3d
+                         {
                            return observer_.getEKF().getInnovation().segment(observer_.linVelIndexTangent(),
                                                                              observer_.sizeLinVelTangent);
                          });
       logger.addLogEntry(category_ + "_MEKF_innovation_oriW_",
-                         [this]() -> Eigen::Vector3d {
+                         [this]() -> Eigen::Vector3d
+                         {
                            return observer_.getEKF().getInnovation().segment(observer_.oriIndexTangent(),
                                                                              observer_.sizeOriTangent);
                          });
       logger.addLogEntry(category_ + "_MEKF_innovation_angVelW_",
-                         [this]() -> Eigen::Vector3d {
+                         [this]() -> Eigen::Vector3d
+                         {
                            return observer_.getEKF().getInnovation().segment(observer_.angVelIndexTangent(),
                                                                              observer_.sizeAngVelTangent);
                          });
@@ -1561,12 +1553,10 @@ void MCKineticsObserver::addToLogger(const mc_control::MCController & ctl,
                          });
 
       logger.addLogEntry(
-          category_ + "_MEKF_prediction_locPos",
-          [this]() -> Eigen::Vector3d
+          category_ + "_MEKF_prediction_locPos", [this]() -> Eigen::Vector3d
           { return observer_.getEKF().getLastPrediction().segment(observer_.posIndex(), observer_.sizePos); });
       logger.addLogEntry(
-          category_ + "_MEKF_prediction_locLinVel",
-          [this]() -> Eigen::Vector3d
+          category_ + "_MEKF_prediction_locLinVel", [this]() -> Eigen::Vector3d
           { return observer_.getEKF().getLastPrediction().segment(observer_.linVelIndex(), observer_.sizeLinVel); });
       logger.addLogEntry(category_ + "_MEKF_prediction_ori",
                          [this]() -> Eigen::Quaterniond
@@ -1577,17 +1567,20 @@ void MCKineticsObserver::addToLogger(const mc_control::MCController & ctl,
                            return ori.inverse().toQuaternion();
                          });
       logger.addLogEntry(category_ + "_MEKF_prediction_locAngVel",
-                         [this]() -> Eigen::Vector3d {
+                         [this]() -> Eigen::Vector3d
+                         {
                            return observer_.getEKF().getLastPrediction().segment(observer_.angVelIndex(),
                                                                                  observer_.sizeAngVelTangent);
                          });
       logger.addLogEntry(category_ + "_MEKF_prediction_unmodeledForce",
-                         [this]() -> Eigen::Vector3d {
+                         [this]() -> Eigen::Vector3d
+                         {
                            return observer_.getEKF().getLastPrediction().segment(observer_.unmodeledForceIndex(),
                                                                                  observer_.sizeForce);
                          });
       logger.addLogEntry(category_ + "_MEKF_prediction_unmodeledTorque",
-                         [this]() -> Eigen::Vector3d {
+                         [this]() -> Eigen::Vector3d
+                         {
                            return observer_.getEKF().getLastPrediction().segment(observer_.unmodeledTorqueIndex(),
                                                                                  observer_.sizeTorque);
                          });
@@ -1595,7 +1588,8 @@ void MCKineticsObserver::addToLogger(const mc_control::MCController & ctl,
       logger.addLogEntry(category_ + "_debug_worldInputRobotKine_position",
                          [this]() -> Eigen::Vector3d { return my_robots_->robot("inputRobot").posW().translation(); });
       logger.addLogEntry(category_ + "_debug_worldInputRobotKine_orientation",
-                         [this]() -> Eigen::Quaternion<double> {
+                         [this]() -> Eigen::Quaternion<double>
+                         {
                            return so::kine::Orientation(so::Matrix3(my_robots_->robot("inputRobot").posW().rotation()))
                                .inverse()
                                .toQuaternion();
@@ -1675,10 +1669,10 @@ void MCKineticsObserver::addToGUI(const mc_control::MCController & ctl,
   processCovsCategory.insert(processCovsCategory.end(), {"Process"});
   std::vector<std::string> sensorCovsCategory = covsCategory;
   sensorCovsCategory.insert(sensorCovsCategory.end(), {"Sensors"});
- 
-  std::vector<std::string> removeOffsetCategory = category; 
+
+  std::vector<std::string> removeOffsetCategory = category;
   removeOffsetCategory.insert(removeOffsetCategory.end(), {"RemoveDisturbanceWrenchOffset"});
-   
+
   gui.addPlot(  "Unbiased external wrench",
     mc_rtc::gui::plot::X( "t",    [&logger]() { return logger.t(); }),
     mc_rtc::gui::plot::Y("Force x", [this]() { return getUnbiasedEstimatedDisturbanceWrench().force()(0); }, Color::Red),
@@ -1692,7 +1686,7 @@ void MCKineticsObserver::addToGUI(const mc_control::MCController & ctl,
 
 
   gui.addElement({category},
-                        mc_rtc::gui::Button("Remove disturbance wrench offset", [this]() { 
+                        mc_rtc::gui::Button("Remove disturbance wrench offset", [this]() {
                           // when clicking the button, the observer initializes the offset with the current disturbance wrench estimation
                           mc_rtc::log::info("Start removing disturbance wrench offset ");
 
@@ -1772,7 +1766,8 @@ void MCKineticsObserver::addContactLogEntries(const mc_control::MCController & c
                                               const KoContactWithSensor & contact)
 {
   logger.addLogEntry(category_ + "_MEKF_estimatedState_contact_" + contact.surfaceName() + "_position", &contact,
-                     [this, &contact]() -> Eigen::Vector3d {
+                     [this, &contact]() -> Eigen::Vector3d
+                     {
                        return observer_.getCurrentStateVector().segment(observer_.contactPosIndex(contact.id()),
                                                                         observer_.sizePos);
                      });
@@ -1797,7 +1792,8 @@ void MCKineticsObserver::addContactLogEntries(const mc_control::MCController & c
                                .toMatrix3());
                      });
   logger.addLogEntry(category_ + "_MEKF_estimatedState_contact_" + contact.surfaceName() + "_forces", &contact,
-                     [this, &contact]() -> Eigen::Vector3d {
+                     [this, &contact]() -> Eigen::Vector3d
+                     {
                        return observer_.getCurrentStateVector().segment(observer_.contactForceIndex(contact.id()),
                                                                         observer_.sizeForce);
                      });
@@ -1933,7 +1929,8 @@ void MCKineticsObserver::addContactLogEntries(const mc_control::MCController & c
                      });
 
   logger.addLogEntry(category_ + "_MEKF_prediction_contact_" + contact.surfaceName() + "_restPos_W", &contact,
-                     [this, &contact]() -> Eigen::Vector3d {
+                     [this, &contact]() -> Eigen::Vector3d
+                     {
                        return observer_.getEKF().getLastPrediction().segment(observer_.contactPosIndex(contact.id()),
                                                                              observer_.sizePos);
                      });
@@ -1968,22 +1965,21 @@ void MCKineticsObserver::addContactLogEntries(const mc_control::MCController & c
                      [this, &contact]() -> Eigen::Vector3d
                      { return observer_.getCentroidContactWrench(contact.id()).segment(3, observer_.sizeTorque); });
 
-  logger.addLogEntry(
-      category_ + "_debug_contactKine_" + contact.surfaceName() + "_inputCentroidContactKine_position", &contact,
-      [this, &contact]() -> Eigen::Vector3d { return observer_.getCentroidContactInputKine(contact.id()).position(); });
+  logger.addLogEntry(category_ + "_debug_contactKine_" + contact.surfaceName() + "_inputCentroidContactKine_position",
+                     &contact, [this, &contact]() -> Eigen::Vector3d
+                     { return observer_.getCentroidContactInputKine(contact.id()).position(); });
 
   logger.addLogEntry(
       category_ + "_debug_contactKine_" + contact.surfaceName() + "_inputCentroidContactKine_orientation", &contact,
-      [this, &contact]() -> Eigen::Quaternion<double> {
-        return observer_.getCentroidContactInputKine(contact.id()).orientation.inverse().toQuaternion();
-      });
-  logger.addLogEntry(
-      category_ + "_debug_contactKine_" + contact.surfaceName() + "_inputCentroidContactKine_linVel", &contact,
-      [this, &contact]() -> Eigen::Vector3d { return observer_.getCentroidContactInputKine(contact.id()).linVel(); });
+      [this, &contact]() -> Eigen::Quaternion<double>
+      { return observer_.getCentroidContactInputKine(contact.id()).orientation.inverse().toQuaternion(); });
+  logger.addLogEntry(category_ + "_debug_contactKine_" + contact.surfaceName() + "_inputCentroidContactKine_linVel",
+                     &contact, [this, &contact]() -> Eigen::Vector3d
+                     { return observer_.getCentroidContactInputKine(contact.id()).linVel(); });
 
-  logger.addLogEntry(
-      category_ + "_debug_contactKine_" + contact.surfaceName() + "_inputCentroidContactKine_angVel", &contact,
-      [this, &contact]() -> Eigen::Vector3d { return observer_.getCentroidContactInputKine(contact.id()).angVel(); });
+  logger.addLogEntry(category_ + "_debug_contactKine_" + contact.surfaceName() + "_inputCentroidContactKine_angVel",
+                     &contact, [this, &contact]() -> Eigen::Vector3d
+                     { return observer_.getCentroidContactInputKine(contact.id()).angVel(); });
   logger.addLogEntry(
       category_ + "_debug_contactKine_" + contact.surfaceName() + "_realRobot_position", &contact,
       [this, &contact, &ctl]() -> Eigen::Vector3d
@@ -2000,41 +1996,36 @@ void MCKineticsObserver::addContactLogEntries(const mc_control::MCController & c
                        return getContactWorldKinematics(contact, robot, robot.forceSensor(contact.fsName_)).position();
                      });
 
-  logger.addLogEntry(
-      category_ + "_debug_contactKine_" + contact.surfaceName() + "_worldcontactKineFromCentroid_position", &contact,
-      [this, &contact]() -> Eigen::Vector3d
-      { return observer_.getWorldContactKineFromCentroid(contact.id()).position(); });
+  logger.addLogEntry(category_ + "_debug_contactKine_" + contact.surfaceName()
+                         + "_worldcontactKineFromCentroid_position",
+                     &contact, [this, &contact]() -> Eigen::Vector3d
+                     { return observer_.getWorldContactKineFromCentroid(contact.id()).position(); });
 
   logger.addLogEntry(
       category_ + "_debug_contactKine_" + contact.surfaceName() + "_worldcontactKineFromCentroid_orientation", &contact,
-      [this, &contact]() -> Eigen::Quaternion<double> {
-        return observer_.getWorldContactKineFromCentroid(contact.id()).orientation.inverse().toQuaternion();
-      });
+      [this, &contact]() -> Eigen::Quaternion<double>
+      { return observer_.getWorldContactKineFromCentroid(contact.id()).orientation.inverse().toQuaternion(); });
 
   logger.addLogEntry(category_ + "_debug_contactKine_" + contact.surfaceName() + "_worldcontactKineFromCentroid_linVel",
-                     &contact,
-                     [this, &contact]() -> Eigen::Vector3d
+                     &contact, [this, &contact]() -> Eigen::Vector3d
                      { return observer_.getWorldContactKineFromCentroid(contact.id()).linVel(); });
 
   logger.addLogEntry(category_ + "_debug_contactKine_" + contact.surfaceName() + "_worldcontactKineFromCentroid_angVel",
-                     &contact,
-                     [this, &contact]() -> Eigen::Vector3d
+                     &contact, [this, &contact]() -> Eigen::Vector3d
                      { return observer_.getWorldContactKineFromCentroid(contact.id()).angVel(); });
 
-  logger.addLogEntry(
-      category_ + "_debug_contactKine_" + contact.surfaceName() + "_inputUserContactKine_position", &contact,
-      [this, &contact]() -> Eigen::Vector3d { return observer_.getUserContactInputKine(contact.id()).position(); });
+  logger.addLogEntry(category_ + "_debug_contactKine_" + contact.surfaceName() + "_inputUserContactKine_position",
+                     &contact, [this, &contact]() -> Eigen::Vector3d
+                     { return observer_.getUserContactInputKine(contact.id()).position(); });
   logger.addLogEntry(category_ + "_debug_contactKine_" + contact.surfaceName() + "_inputUserContactKine_orientation",
-                     &contact,
-                     [this, &contact]() -> Eigen::Quaternion<double> {
-                       return observer_.getUserContactInputKine(contact.id()).orientation.inverse().toQuaternion();
-                     });
-  logger.addLogEntry(
-      category_ + "_debug_contactKine_" + contact.surfaceName() + "_inputUserContactKine_linVel", &contact,
-      [this, &contact]() -> Eigen::Vector3d { return observer_.getUserContactInputKine(contact.id()).linVel(); });
-  logger.addLogEntry(
-      category_ + "_debug_contactKine_" + contact.surfaceName() + "_inputUserContactKine_angVel", &contact,
-      [this, &contact]() -> Eigen::Vector3d { return observer_.getUserContactInputKine(contact.id()).angVel(); });
+                     &contact, [this, &contact]() -> Eigen::Quaternion<double>
+                     { return observer_.getUserContactInputKine(contact.id()).orientation.inverse().toQuaternion(); });
+  logger.addLogEntry(category_ + "_debug_contactKine_" + contact.surfaceName() + "_inputUserContactKine_linVel",
+                     &contact, [this, &contact]() -> Eigen::Vector3d
+                     { return observer_.getUserContactInputKine(contact.id()).linVel(); });
+  logger.addLogEntry(category_ + "_debug_contactKine_" + contact.surfaceName() + "_inputUserContactKine_angVel",
+                     &contact, [this, &contact]() -> Eigen::Vector3d
+                     { return observer_.getUserContactInputKine(contact.id()).angVel(); });
 
   logger.addLogEntry(category_ + "_debug_contactState_isSet_" + contact.surfaceName(), &contact,
                      [&contact]() -> std::string { return contact.isSet() ? "Set" : "notSet"; });
@@ -2068,9 +2059,9 @@ void MCKineticsObserver::addContactMeasurementsLogEntries(mc_rtc::Logger & logge
                            observer_.contactTorqueIndexTangent(contact.id()), observer_.sizeTorqueTangent);
                      });
 
-  logger.addLogEntry(
-      category_ + "_MEKF_measurements_contacts_force_" + contact.surfaceName() + "_viscoAfterCorrection", &contact,
-      [&contact]() -> Eigen::Vector3d { return contact.viscoElasticWrenchAfterCorrection_.segment(0, 3); });
+  logger.addLogEntry(category_ + "_MEKF_measurements_contacts_force_" + contact.surfaceName() + "_viscoAfterCorrection",
+                     &contact, [&contact]() -> Eigen::Vector3d
+                     { return contact.viscoElasticWrenchAfterCorrection_.segment(0, 3); });
   logger.addLogEntry(
       category_ + "_MEKF_measurements_contacts_torque_" + contact.surfaceName() + "_viscoAfterCorrection", &contact,
       [&contact]() -> Eigen::Vector3d { return contact.viscoElasticWrenchAfterCorrection_.segment(3, 3); });
@@ -2089,7 +2080,8 @@ void MCKineticsObserver::addContactMeasurementsLogEntries(mc_rtc::Logger & logge
                            observer_.getContactMeasIndexByNum(contact.id()), observer_.sizeForce);
                      });
   logger.addLogEntry(category_ + "_MEKF_measurements_contacts_force_" + contact.surfaceName() + "_corrected", &contact,
-                     [this, &contact]() -> Eigen::Vector3d {
+                     [this, &contact]() -> Eigen::Vector3d
+                     {
                        return correctedMeasurements_.segment(observer_.getContactMeasIndexByNum(contact.id()),
                                                              observer_.sizeForce);
                      });

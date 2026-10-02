@@ -332,6 +332,14 @@ void MCKineticsObserver::reset(const mc_control::MCController & ctl)
 
   initObserverStateVector(ctl, realRobot);
 
+  auto & controller = const_cast<mc_control::MCController &>(ctl);
+  if(!controller.datastore().has("KineticsObserver::unbiasedDisturbanceWrench"))
+  {
+    controller.datastore().make<sva::ForceVecd>("KineticsObserver::unbiasedDisturbanceWrench");
+  }
+  controller.datastore().assign<sva::ForceVecd>("KineticsObserver::unbiasedDisturbanceWrench",
+                                                unbiasedDisturbanceWrench_);
+
   disturbanceWrenchOffset_.force().setZero();
   disturbanceWrenchOffset_.moment().setZero();
   worldAnchorPos_.setZero();
@@ -515,6 +523,9 @@ bool MCKineticsObserver::run(const mc_control::MCController & ctl)
 
     wrenchOffsetIndex_++;
   }
+
+  const_cast<mc_control::MCController &>(ctl).datastore().assign<sva::ForceVecd>(
+      "KineticsObserver::unbiasedDisturbanceWrench", unbiasedDisturbanceWrench_);
 
   if(observer_.nanDetected_) { estimationState_ = errorDetected; }
   else if(invincibilityIter_ > 0 && invincibilityIter_ < invincibilityFrame_) { estimationState_ = invincibilityFrame; }

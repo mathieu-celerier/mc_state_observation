@@ -52,6 +52,7 @@ void MCKineticsObserver::configure(const mc_control::MCController & ctl, const m
 
   /* configuration of the contacts manager */
   auto contactsConfig = config("contacts");
+  contactsConfig("contactSensorsIgnored", contactSensorsIgnored_);
 
   std::string contactsDetectionString = static_cast<std::string>(contactsConfig("contactsDetection"));
   KoContactsDetector::ContactsDetection contactsDetectionMethod =
@@ -755,6 +756,11 @@ void MCKineticsObserver::inputAdditionalWrench(const mc_control::MCController & 
 
   for(const auto & forceSensor : measRobot.forceSensors())
   {
+    if(std::find(contactSensorsIgnored_.begin(), contactSensorsIgnored_.end(), forceSensor.name())
+       != contactSensorsIgnored_.end())
+    {
+      continue;
+    }
     const auto it = contactsManager_.fs_Surface_Map.find(forceSensor.name());
 
     bool useSensor = false;

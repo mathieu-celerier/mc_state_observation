@@ -351,6 +351,8 @@ private:
 
   // indicates if the debug logs have to be added.
   bool withDebugLogs_ = false;
+  /// Force sensors that are never given to the Kinetics Observer as an additional (known) wrench
+  std::vector<std::string> contactSensorsIgnored_;
   stateObservation::Matrix3 contactsPosAverageStateCov_;
 
   // indicates if we want to perform odometry, and if yes, flat or 6d odometry
